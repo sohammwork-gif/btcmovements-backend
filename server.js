@@ -1,4 +1,4 @@
-﻿// server.js - Using Bybit API (no geographic restrictions)
+﻿// server.js - Using CoinGecko API (cloud-friendly)
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -9,15 +9,15 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Bybit API endpoint
-const BYBIT_API = 'https://api.bybit.com';
+// CoinGecko API endpoint
+const COINGECKO_API = 'https://api.coingecko.com/api/v3';
 
-// Map your frontend instrument names to Bybit symbols
+// Map your frontend instrument names to CoinGecko IDs
 const INSTRUMENT_MAP = {
-  'BTC-PERPETUAL': { symbol: 'BTCUSDT', type: 'spot' },
-  'ETH-PERPETUAL': { symbol: 'ETHUSDT', type: 'spot' },
-  'BTC-SPOT': { symbol: 'BTCUSDT', type: 'spot' },
-  'ETH-SPOT': { symbol: 'ETHUSDT', type: 'spot' },
+  'BTC-PERPETUAL': { coinId: 'bitcoin', name: 'Bitcoin' },
+  'ETH-PERPETUAL': { coinId: 'ethereum', name: 'Ethereum' },
+  'BTC-SPOT': { coinId: 'bitcoin', name: 'Bitcoin' },
+  'ETH-SPOT': { coinId: 'ethereum', name: 'Ethereum' },
 };
 
 function resolveInstrument(instrumentName) {
@@ -27,58 +27,46 @@ function resolveInstrument(instrumentName) {
     if (instrumentName.toUpperCase().startsWith('ETH')) return INSTRUMENT_MAP['ETH-PERPETUAL'];
     return INSTRUMENT_MAP['BTC-PERPETUAL'];
   }
-  return { symbol: 'BTCUSDT', type: 'spot' };
+  return { coinId: 'bitcoin', name: 'Bitcoin' };
 }
 
-function resolutionToInterval(res) {
-  if (!res) return '1';
-  const s = String(res).toLowerCase();
-  if (s === '1' || s === '1m') return '1';
-  if (s === '5' || s === '5m') return '5';
-  if (s === '15' || s === '15m') return '15';
-  if (s === '60' || s === '1h' || s === '60m') return '60';
-  if (s === '240' || s === '4h') return '240';
-  if (s === '1d' || s === '1D' || s === '1440') return 'D';
-  return '1';
-}
-
-// /api/ticker => returns Bybit 24hr ticker summary
+// /api/ticker => returns CoinGecko ticker data
 app.get('/api/ticker', async (req, res) => {
   try {
     const { instrument_name } = req.query;
     if (!instrument_name) return res.status(400).json({ error: 'instrument_name required' });
 
     const inst = resolveInstrument(instrument_name);
-    const symbol = inst.symbol;
+    const coinId = inst.coinId;
 
-    const url = `${BYBIT_API}/v5/market/tickers?category=spot&symbol=${symbol}`;
+    const url = `${COINGECKO_API}/simple/price?ids=${coinId}&vs_currencies=usd&include_24hr_change=true&include_last_updated_at=true`;
     const response = await axios.get(url, { timeout: 10000 });
     
-    if (response.data.retCode !== 0) {
-      throw new Error(`Bybit API error: ${response.data.retMsg}`);
-    }
-
-    const tickers = response.data.result.list;
-    if (!tickers || tickers.length === 0) {
+    const coinData = response.data[coinId];
+    if (!coinData) {
       throw new Error('No ticker data found');
     }
 
-    const ticker = tickers[0];
+    // Get more detailed data for high/low
+    const detailUrl = `${COINGECKO_API}/coins/${coinId}`;
+    const detailResponse = await axios.get(detailUrl, { timeout: 10000 });
+    const marketData = detailResponse.data.market_data;
+
     const result = [{
       instrument_name: instrument_name,
-      bid_price: Number(ticker.bid1Price),
-      ask_price: Number(ticker.ask1Price),
-      last: Number(ticker.lastPrice),
-      high: Number(ticker.highPrice24h),
-      low: Number(ticker.lowPrice24h),
-      volume: Number(ticker.volume24h),
-      volume_usd: Number(ticker.turnover24h),
-      timestamp: Date.now()
+      bid_price: Number(coinData.usd) * 0.999, // Simulate bid
+      ask_price: Number(coinData.usd) * 1.001, // Simulate ask
+      last: Number(coinData.usd),
+      high: Number(marketData.high_24h?.usd || coinData.usd * 1.02),
+      low: Number(marketData.low_24h?.usd || coinData.usd * 0.98),
+      volume: Number(marketData.total_volume?.usd || 0),
+      volume_usd: Number(marketData.total_volume?.usd || 0),
+      timestamp: coinData.last_updated_at ? coinData.last_updated_at * 1000 : Date.now()
     }];
 
     return res.json({ jsonrpc: '2.0', result });
   } catch (err) {
-    console.error('ERROR /api/ticker (bybit):', err.message);
+    console.error('ERROR /api/ticker (coingecko):', err.message);
     return res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
@@ -94,31 +82,26 @@ app.get('/api/candles', async (req, res) => {
     console.log('\n🎯 ========== SERVER CANDLES REQUEST ==========');
     console.log('📋 Request params:', { instrument_name, start_ts, end_ts, resolution });
 
-    // Convert instrument name to CoinGecko format
-    let coinId;
-    if (instrument_name.includes('BTC')) {
-      coinId = 'bitcoin';
-    } else if (instrument_name.includes('ETH')) {
-      coinId = 'ethereum';
-    } else {
-      coinId = 'bitcoin'; // default
-    }
+    const inst = resolveInstrument(instrument_name);
+    const coinId = inst.coinId;
 
-    // Convert resolution to days (CoinGecko uses days)
-    const startTime = Math.floor(Number(start_ts) / 1000); // Convert to seconds
+    console.log('🔧 Using CoinGecko with:', { coinId: coinId, name: inst.name });
+
+    // Convert timestamps to seconds
+    const startTime = Math.floor(Number(start_ts) / 1000);
     const endTime = Math.floor(Number(end_ts) / 1000);
     
-    // Calculate days between dates for appropriate data density
+    // Calculate days between dates
     const daysDiff = Math.ceil((endTime - startTime) / (60 * 60 * 24));
     let days = Math.max(1, Math.min(daysDiff, 90)); // CoinGecko limit: 90 days max
     
-    console.log('🔧 Using CoinGecko with:', { coinId, days });
+    console.log('📅 Date range:', new Date(Number(start_ts)), 'to', new Date(Number(end_ts)));
+    console.log('⏰ Days range:', days, 'days');
 
-    const coingeckoUrl = `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart?vs_currency=usd&days=${days}&interval=${
-      resolution === '1' || resolution === '5' || resolution === '15' ? 'hourly' : 'daily'
-    }`;
+    // Use hourly data for better granularity
+    const coingeckoUrl = `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart?vs_currency=usd&days=${days}&interval=hourly`;
     
-    console.log('🔗 Making request to CoinGecko');
+    console.log('🔗 Making request to CoinGecko:', coingeckoUrl);
 
     const response = await axios.get(coingeckoUrl, { timeout: 30000 });
     
@@ -132,25 +115,44 @@ app.get('/api/candles', async (req, res) => {
     
     console.log('📊 CoinGecko returned', prices.length, 'price points');
 
+    // Filter data to our requested time range
+    const filteredPrices = prices.filter(price => {
+      const priceTime = Number(price[0]);
+      return priceTime >= Number(start_ts) && priceTime <= Number(end_ts);
+    });
+
+    console.log('📊 After filtering:', filteredPrices.length, 'points in range');
+
     // Convert CoinGecko format to our expected format
-    // Since CoinGecko doesn't give OHLC directly, we'll use the price for all OHLC
+    // Since CoinGecko doesn't give OHLC directly, we'll simulate it
     const result = {
-      t: prices.map(d => Number(d[0])), // Timestamp in ms
-      o: prices.map(d => parseFloat(d[1])), // Use price as open
-      h: prices.map(d => parseFloat(d[1])), // Use price as high  
-      l: prices.map(d => parseFloat(d[1])), // Use price as low
-      c: prices.map(d => parseFloat(d[1])), // Use price as close
-      v: prices.map(d => 0) // No volume data
+      t: filteredPrices.map(d => Number(d[0])), // Timestamp in ms
+      o: filteredPrices.map(d => parseFloat(d[1])), // Use price as open
+      h: filteredPrices.map(d => parseFloat(d[1]) * 1.001), // Simulate high (slightly higher)
+      l: filteredPrices.map(d => parseFloat(d[1]) * 0.999), // Simulate low (slightly lower)
+      c: filteredPrices.map(d => parseFloat(d[1])), // Use price as close
+      v: filteredPrices.map(d => 1000) // Simulate volume
     };
 
     // Debug first data point
     if (result.t.length > 0) {
       console.log('🔍 First data point:');
       console.log('   Time:', new Date(result.t[0]));
-      console.log('   Price:', result.o[0]);
-      console.log('📈 Price range:', Math.min(...result.o), 'to', Math.max(...result.o));
+      console.log('   Open:', result.o[0]);
+      console.log('   High:', result.h[0]);
+      console.log('   Low:', result.l[0]);
+      console.log('   Close:', result.c[0]);
+      console.log('📈 Price range - Min:', Math.min(...result.o), 'Max:', Math.max(...result.o));
     } else {
-      console.log('❌ NO DATA RETURNED FROM COINGECKO');
+      console.log('❌ NO DATA IN FILTERED RANGE');
+      // If no filtered data, use all data
+      result.t = prices.map(d => Number(d[0]));
+      result.o = prices.map(d => parseFloat(d[1]));
+      result.h = prices.map(d => parseFloat(d[1]) * 1.001);
+      result.l = prices.map(d => parseFloat(d[1]) * 0.999);
+      result.c = prices.map(d => parseFloat(d[1]));
+      result.v = prices.map(d => 1000);
+      console.log('🔄 Using all', result.t.length, 'data points');
     }
 
     const hasData = result.t.length > 0;
@@ -175,6 +177,7 @@ app.get('/api/candles', async (req, res) => {
     console.error('Error details:', err.message);
     if (err.response) {
       console.error('API response status:', err.response.status);
+      console.error('API response data:', err.response.data);
     }
     console.error('❌ ========== ERROR END ==========\n');
     
@@ -185,10 +188,22 @@ app.get('/api/candles', async (req, res) => {
   }
 });
 
+// Simple root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'BTC Movements Backend API',
+    status: 'running',
+    endpoints: {
+      '/api/candles': 'Get candle data',
+      '/api/ticker': 'Get ticker data'
+    }
+  });
+});
+
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log('🚀 ==========================================');
-  console.log('🚀 Bybit Backend Server STARTED');
+  console.log('🚀 CoinGecko Backend Server STARTED');
   console.log('🚀 Port:', PORT);
   console.log('🚀 Time:', new Date().toLocaleString());
   console.log('🚀 ==========================================');
