@@ -1,77 +1,98 @@
 ﻿const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
-const path = require('path');
 
 const app = express();
-
-// Middleware
 app.use(cors());
-app.use(express.json());
-app.use(express.static('public'));
-
 const PORT = process.env.PORT || 4809;
 
-// Binance API configuration
-const BINANCE_FUTURES_API = 'https://fapi.binance.com/fapi/v1/klines';
+// Bybit API - High limits, no restrictions
+const BYBIT_API = 'https://api.bybit.com/v5/market/kline';
 
-// Convert resolution to Binance interval
-function getBinanceInterval(resolution) {
+// Convert resolution to Bybit interval
+function getBybitInterval(resolution) {
   const intervalMap = {
-    '1': '1m', '3': '3m', '5': '5m', '15': '15m', '30': '30m',
-    '60': '1h', '120': '2h', '240': '4h', '360': '6h', '480': '8h', '720': '12h',
-    'D': '1d', '1D': '1d', '3D': '3d', 'W': '1w', 'M': '1M'
+    '1': '1', '3': '3', '5': '5', '15': '15', '30': '30',
+    '60': '60', '120': '120', '240': '240', '360': '360', '720': '720',
+    'D': 'D', '1D': 'D', 'W': 'W', 'M': 'M'
   };
-  return intervalMap[resolution] || '1h';
+  return intervalMap[resolution] || '60';
 }
 
-// Main candles endpoint
 app.get('/api/candles', async (req, res) => {
   try {
     const { instrument_name, start_ts, end_ts, resolution = '60' } = req.query;
     
-    console.log('Fetching data for:', { instrument_name, start_ts, end_ts, resolution });
+    console.log('🚀 Fetching from Bybit:', { instrument_name, start_ts, end_ts, resolution });
 
-    const binanceInterval = getBinanceInterval(resolution);
+    const bybitInterval = getBybitInterval(resolution);
     
-    const response = await axios.get(BINANCE_FUTURES_API, {
+    // Use linear for perpetual, spot for spot
+    const category = instrument_name && instrument_name.includes('PERP') ? 'linear' : 'spot';
+    const symbol = 'BTCUSDT';
+
+    const response = await axios.get(BYBIT_API, {
       params: {
-        symbol: 'BTCUSDT',
-        interval: binanceInterval,
-        startTime: start_ts || undefined,
-        endTime: end_ts || undefined,
+        category: category,
+        symbol: symbol,
+        interval: bybitInterval,
+        start: start_ts || undefined,
+        end: end_ts || undefined,
         limit: 1000
       },
-      timeout: 15000
+      timeout: 10000
     });
 
-    const formattedData = response.data.map(candle => ({
+    if (response.data.retCode !== 0) {
+      throw new Error(response.data.retMsg || 'Bybit API error');
+    }
+
+    // Bybit returns: [timestamp, open, high, low, close, volume, turnover]
+    const formattedData = response.data.result.list.map(candle => ({
       timestamp: parseInt(candle[0]),
       open: parseFloat(candle[1]),
       high: parseFloat(candle[2]),
       low: parseFloat(candle[3]),
       close: parseFloat(candle[4]),
       volume: parseFloat(candle[5])
-    }));
+    })).reverse(); // Reverse to get chronological order
 
-    console.log(`Returning ${formattedData.length} candles`);
+    console.log(`✅ Success: Returning ${formattedData.length} candles from Bybit`);
+    
     res.json(formattedData);
     
   } catch (error) {
-    console.error('Binance API error:', error.message);
+    console.error('❌ Bybit API error:', error.message);
     
     if (error.code === 'ECONNABORTED') {
       return res.status(408).json({ error: 'Request timeout' });
     }
     
     if (error.response?.status === 429) {
-      return res.status(429).json({ error: 'Rate limit exceeded. Please try again later.' });
+      return res.status(429).json({ error: 'Rate limit exceeded' });
     }
     
     res.status(500).json({ 
-      error: 'Failed to fetch data from Binance',
-      details: error.response?.data?.msg || error.message 
+      error: 'Failed to fetch data from Bybit',
+      details: error.message 
     });
+  }
+});
+
+// Additional endpoints for more data
+app.get('/api/funding-rate', async (req, res) => {
+  try {
+    const response = await axios.get('https://api.bybit.com/v5/market/funding/history', {
+      params: {
+        category: 'linear',
+        symbol: 'BTCUSDT',
+        limit: 100
+      }
+    });
+
+    res.json(response.data.result.list);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
 });
 
@@ -79,19 +100,32 @@ app.get('/api/candles', async (req, res) => {
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'BTC Movements Backend is running',
-    timestamp: new Date().toISOString()
+    message: 'BTC Movements Backend with Bybit is running',
+    timestamp: new Date().toISOString(),
+    provider: 'Bybit API',
+    limits: '100 requests/second'
   });
 });
 
-// Serve frontend
+// Root endpoint
 app.get('/', (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  res.json({
+    message: 'BTC Movements Backend',
+    endpoints: {
+      candles: '/api/candles?instrument_name=BTC-PERPETUAL&resolution=60',
+      funding: '/api/funding-rate',
+      health: '/api/health'
+    },
+    examples: {
+      hourly: '/api/candles?instrument_name=BTC-PERPETUAL&resolution=60&limit=100',
+      daily: '/api/candles?instrument_name=BTC-PERPETUAL&resolution=D&limit=30'
+    }
+  });
 });
 
-// Start server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 BTC Movements Backend running on port ${PORT}`);
-  console.log(`📊 Endpoint: http://localhost:${PORT}/api/candles`);
-  console.log(`❤️ Health check: http://localhost:${PORT}/api/health`);
+  console.log(`📊 Bybit API Endpoint: http://localhost:${PORT}/api/candles`);
+  console.log(`❤️ Health Check: http://localhost:${PORT}/api/health`);
+  console.log(`⚡ Rate Limits: 100 requests/second`);
 });
