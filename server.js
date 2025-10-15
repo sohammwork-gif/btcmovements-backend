@@ -1,4 +1,4 @@
-﻿// server.js - Binance backend with DEBUG LOGGING
+﻿// server.js - Using Bybit API (no geographic restrictions)
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
@@ -9,14 +9,13 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Binance endpoints
-const BINANCE_SPOT = 'https://api.binance.com';
-const BINANCE_FUT = 'https://fapi.binance.com';
+// Bybit API endpoint
+const BYBIT_API = 'https://api.bybit.com';
 
-// Map your frontend instrument names to Binance symbols
+// Map your frontend instrument names to Bybit symbols
 const INSTRUMENT_MAP = {
-  'BTC-PERPETUAL': { symbol: 'BTCUSDT', type: 'futures' },
-  'ETH-PERPETUAL': { symbol: 'ETHUSDT', type: 'futures' },
+  'BTC-PERPETUAL': { symbol: 'BTCUSDT', type: 'spot' },
+  'ETH-PERPETUAL': { symbol: 'ETHUSDT', type: 'spot' },
   'BTC-SPOT': { symbol: 'BTCUSDT', type: 'spot' },
   'ETH-SPOT': { symbol: 'ETHUSDT', type: 'spot' },
 };
@@ -32,136 +31,18 @@ function resolveInstrument(instrumentName) {
 }
 
 function resolutionToInterval(res) {
-  if (!res) return '1m';
+  if (!res) return '1';
   const s = String(res).toLowerCase();
-  if (s === '1' || s === '1m') return '1m';
-  if (s === '5' || s === '5m') return '5m';
-  if (s === '15' || s === '15m') return '15m';
-  if (s === '60' || s === '1h' || s === '60m') return '1h';
-  if (s === '240' || s === '4h') return '4h';
-  if (s === '1d' || s === '1D' || s === '1440') return '1d';
-  return s;
+  if (s === '1' || s === '1m') return '1';
+  if (s === '5' || s === '5m') return '5';
+  if (s === '15' || s === '15m') return '15';
+  if (s === '60' || s === '1h' || s === '60m') return '60';
+  if (s === '240' || s === '4h') return '240';
+  if (s === '1d' || s === '1D' || s === '1440') return 'D';
+  return '1';
 }
 
-// fetch klines with pagination (binance limit=1000 per request)
-async function fetchKlinesPaginated(baseUrl, symbol, interval, startTime, endTime) {
-  const limit = 1000;
-  let start = Number(startTime);
-  const end = Number(endTime);
-  const t = [], o = [], h = [], l = [], c = [];
-
-  console.log(`   📡 Fetching SPOT data for ${symbol} from ${new Date(start)} to ${new Date(end)}`);
-
-  while (true) {
-    const params = new URLSearchParams({
-      symbol,
-      interval,
-      limit: String(limit),
-      startTime: String(start),
-      endTime: String(end),
-    });
-    const url = `${baseUrl}/api/v3/klines?${params.toString()}`;
-    
-    console.log(`   🔗 Making request to: ${baseUrl}/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}&startTime=${start}&endTime=${end}`);
-    
-    const r = await axios.get(url, { timeout: 30000 });
-    const rows = r.data;
-    
-    console.log(`   ✅ Received ${rows.length} candles from Binance`);
-
-    if (!Array.isArray(rows) || rows.length === 0) break;
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      t.push(Number(row[0]));
-      o.push(Number(row[1]));
-      h.push(Number(row[2]));
-      l.push(Number(row[3]));
-      c.push(Number(row[4]));
-    }
-
-    const lastOpen = Number(rows[rows.length - 1][0]);
-    if (rows.length < limit || lastOpen >= end) break;
-
-    let addMs = 60000;
-    if (interval.endsWith('m')) {
-      const n = parseInt(interval.slice(0, -1));
-      addMs = n * 60 * 1000;
-    } else if (interval.endsWith('h')) {
-      const n = parseInt(interval.slice(0, -1));
-      addMs = n * 60 * 60 * 1000;
-    } else if (interval.endsWith('d')) {
-      const n = parseInt(interval.slice(0, -1));
-      addMs = n * 24 * 60 * 60 * 1000;
-    }
-    start = lastOpen + addMs;
-    if (start > Date.now() + 1000) break;
-  }
-
-  console.log(`   📊 Total SPOT candles collected: ${t.length}`);
-  return { t, o, h, l, c };
-}
-
-// Special path for futures klines: endpoint differs (/fapi/v1/klines)
-async function fetchKlinesPaginatedFutures(baseUrl, symbol, interval, startTime, endTime) {
-  const limit = 1000;
-  let start = Number(startTime);
-  const end = Number(endTime);
-  const t = [], o = [], h = [], l = [], c = [];
-
-  console.log(`   📡 Fetching FUTURES data for ${symbol} from ${new Date(start)} to ${new Date(end)}`);
-
-  while (true) {
-    const params = new URLSearchParams({
-      symbol,
-      interval,
-      limit: String(limit),
-      startTime: String(start),
-      endTime: String(end),
-    });
-    const url = `${baseUrl}/fapi/v1/klines?${params.toString()}`;
-    
-    console.log(`   🔗 Making request to: ${baseUrl}/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}&startTime=${start}&endTime=${end}`);
-    
-    const r = await axios.get(url, { timeout: 30000 });
-    const rows = r.data;
-    
-    console.log(`   ✅ Received ${rows.length} candles from Binance Futures`);
-
-    if (!Array.isArray(rows) || rows.length === 0) break;
-
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      t.push(Number(row[0]));
-      o.push(Number(row[1]));
-      h.push(Number(row[2]));
-      l.push(Number(row[3]));
-      c.push(Number(row[4]));
-    }
-
-    const lastOpen = Number(rows[rows.length - 1][0]);
-    if (rows.length < limit || lastOpen >= end) break;
-
-    let addMs = 60000;
-    if (interval.endsWith('m')) {
-      const n = parseInt(interval.slice(0, -1));
-      addMs = n * 60 * 1000;
-    } else if (interval.endsWith('h')) {
-      const n = parseInt(interval.slice(0, -1));
-      addMs = n * 60 * 60 * 1000;
-    } else if (interval.endsWith('d')) {
-      const n = parseInt(interval.slice(0, -1));
-      addMs = n * 24 * 60 * 60 * 1000;
-    }
-    start = lastOpen + addMs;
-    if (start > Date.now() + 1000) break;
-  }
-
-  console.log(`   📊 Total FUTURES candles collected: ${t.length}`);
-  return { t, o, h, l, c };
-}
-
-// /api/ticker => returns Binance 24hr ticker summary
+// /api/ticker => returns Bybit 24hr ticker summary
 app.get('/api/ticker', async (req, res) => {
   try {
     const { instrument_name } = req.query;
@@ -169,46 +50,40 @@ app.get('/api/ticker', async (req, res) => {
 
     const inst = resolveInstrument(instrument_name);
     const symbol = inst.symbol;
-    if (inst.type === 'futures') {
-      const url = `${BINANCE_FUT}/fapi/v1/ticker/24hr?symbol=${symbol}`;
-      const r = await axios.get(url, { timeout: 10000 });
-      const data = r.data;
-      const result = [{
-        instrument_name: instrument_name,
-        bid_price: Number(data.bidPrice),
-        ask_price: Number(data.askPrice),
-        last: Number(data.lastPrice),
-        high: Number(data.highPrice),
-        low: Number(data.lowPrice),
-        volume: Number(data.volume),
-        volume_usd: Number(data.quoteVolume),
-        timestamp: Date.now()
-      }];
-      return res.json({ jsonrpc: '2.0', result });
-    } else {
-      const url = `${BINANCE_SPOT}/api/v3/ticker/24hr?symbol=${symbol}`;
-      const r = await axios.get(url, { timeout: 10000 });
-      const data = r.data;
-      const result = [{
-        instrument_name: instrument_name,
-        bid_price: Number(data.bidPrice),
-        ask_price: Number(data.askPrice),
-        last: Number(data.lastPrice),
-        high: Number(data.highPrice),
-        low: Number(data.lowPrice),
-        volume: Number(data.volume),
-        volume_usd: Number(data.quoteVolume),
-        timestamp: Date.now()
-      }];
-      return res.json({ jsonrpc: '2.0', result });
+
+    const url = `${BYBIT_API}/v5/market/tickers?category=spot&symbol=${symbol}`;
+    const response = await axios.get(url, { timeout: 10000 });
+    
+    if (response.data.retCode !== 0) {
+      throw new Error(`Bybit API error: ${response.data.retMsg}`);
     }
+
+    const tickers = response.data.result.list;
+    if (!tickers || tickers.length === 0) {
+      throw new Error('No ticker data found');
+    }
+
+    const ticker = tickers[0];
+    const result = [{
+      instrument_name: instrument_name,
+      bid_price: Number(ticker.bid1Price),
+      ask_price: Number(ticker.ask1Price),
+      last: Number(ticker.lastPrice),
+      high: Number(ticker.highPrice24h),
+      low: Number(ticker.lowPrice24h),
+      volume: Number(ticker.volume24h),
+      volume_usd: Number(ticker.turnover24h),
+      timestamp: Date.now()
+    }];
+
+    return res.json({ jsonrpc: '2.0', result });
   } catch (err) {
-    console.error('ERROR /api/ticker (binance):', err.response?.data || err.message || err);
-    return res.status(500).json({ error: 'Internal server error', details: err.response?.data || err.message || String(err) });
+    console.error('ERROR /api/ticker (bybit):', err.message);
+    return res.status(500).json({ error: 'Internal server error', details: err.message });
   }
 });
 
-// /api/candles => returns t,o,h,l,c arrays (fetches minute/hourly from Binance)
+// /api/candles => Using Bybit API (no geographic restrictions)
 app.get('/api/candles', async (req, res) => {
   try {
     const { instrument_name, start_ts, end_ts, resolution } = req.query;
@@ -217,88 +92,100 @@ app.get('/api/candles', async (req, res) => {
     }
 
     console.log('\n🎯 ========== SERVER CANDLES REQUEST ==========');
-    console.log('📋 Request params:', { 
-      instrument_name, 
-      start_ts, 
-      end_ts, 
-      resolution 
-    });
+    console.log('📋 Request params:', { instrument_name, start_ts, end_ts, resolution });
+
+    // Convert instrument name to Bybit format
+    let symbol;
+    if (instrument_name.includes('BTC')) {
+      symbol = 'BTCUSDT';
+    } else if (instrument_name.includes('ETH')) {
+      symbol = 'ETHUSDT';
+    } else {
+      symbol = 'BTCUSDT'; // default
+    }
+
+    // Convert resolution to Bybit format
+    let interval;
+    switch (resolution) {
+      case '1': interval = '1'; break;
+      case '5': interval = '5'; break;
+      case '15': interval = '15'; break;
+      case '60': interval = '60'; break;
+      case '240': interval = '240'; break;
+      case '1D': interval = 'D'; break;
+      default: interval = '1';
+    }
+
+    console.log('🔧 Using Bybit with:', { symbol, interval });
+
+    // Convert timestamps to seconds (Bybit uses seconds)
+    const startTime = Math.floor(Number(start_ts) / 1000);
+    const endTime = Math.floor(Number(end_ts) / 1000);
+
+    console.log('⏰ Bybit timestamps (seconds):', startTime, 'to', endTime);
     console.log('📅 Date range:', new Date(Number(start_ts)), 'to', new Date(Number(end_ts)));
-    console.log('⏰ Timestamps:', start_ts, 'to', end_ts);
 
-    const inst = resolveInstrument(instrument_name);
-    const symbol = inst.symbol;
-    const interval = resolutionToInterval(resolution || '1');
-
-    console.log('🔧 Resolved instrument:', inst);
-    console.log('⏱️  Using interval:', interval);
-
-    let data;
-    if (inst.type === 'futures') {
-      console.log('🚀 Fetching FUTURES data from Binance...');
-      const kl = await fetchKlinesPaginatedFutures(BINANCE_FUT, symbol, interval, start_ts, end_ts);
-      data = { result: kl, resolution_used: interval };
-    } else {
-      console.log('🚀 Fetching SPOT data from Binance...');
-      const kl = await fetchKlinesPaginated(BINANCE_SPOT, symbol, interval, start_ts, end_ts);
-      data = { result: kl, resolution_used: interval };
-    }
-
-    // CRITICAL DEBUG INFO
-    console.log('\n📊 ========== BINANCE DATA ANALYSIS ==========');
-    console.log('📦 Total candles received:', data.result.t.length);
+    const bybitUrl = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${interval}&start=${startTime}&end=${endTime}&limit=1000`;
     
-    if (data.result.t.length > 0) {
-      console.log('\n🔍 FIRST CANDLE DETAILS:');
-      console.log('   🕐 Time:', new Date(data.result.t[0]));
-      console.log('   💰 Open:', data.result.o[0]);
-      console.log('   📈 High:', data.result.h[0]);
-      console.log('   📉 Low:', data.result.l[0]);
-      console.log('   📊 Close:', data.result.c[0]);
-      
-      console.log('\n🔍 DATA TYPES:');
-      console.log('   Open type:', typeof data.result.o[0]);
-      console.log('   Close type:', typeof data.result.c[0]);
-      
-      console.log('\n📈 PRICE RANGES:');
-      console.log('   Open:  ', Math.min(...data.result.o), 'to', Math.max(...data.result.o));
-      console.log('   Close: ', Math.min(...data.result.c), 'to', Math.max(...data.result.c));
-      
-      console.log('\n🔢 FIRST 5 CANDLES:');
-      for (let i = 0; i < Math.min(5, data.result.t.length); i++) {
-        console.log(`   ${i+1}. Time: ${new Date(data.result.t[i])}, Close: ${data.result.c[i]}`);
-      }
-    } else {
-      console.log('❌ NO CANDLES RETURNED FROM BINANCE!');
-      console.log('💡 Possible issues:');
-      console.log('   - Date range too far in future (2025)');
-      console.log('   - Binance has no data for this range');
-      console.log('   - Symbol/interval not supported');
+    console.log('🔗 Making request to Bybit');
+
+    const response = await axios.get(bybitUrl, { timeout: 30000 });
+    
+    console.log('✅ Received response from Bybit');
+
+    if (response.data.retCode !== 0) {
+      throw new Error(`Bybit API error: ${response.data.retMsg}`);
     }
 
-    const hasData = data.result.t.length > 0;
+    const klines = response.data.result.list || [];
+    
+    console.log('📊 Bybit returned', klines.length, 'candles');
+
+    // Convert Bybit format to our expected format
+    const result = {
+      t: klines.map(d => Number(d[0]) * 1000), // Convert seconds to milliseconds
+      o: klines.map(d => parseFloat(d[1])),    // Open
+      h: klines.map(d => parseFloat(d[2])),    // High
+      l: klines.map(d => parseFloat(d[3])),    // Low
+      c: klines.map(d => parseFloat(d[4])),    // Close
+      v: klines.map(d => parseFloat(d[5]))     // Volume
+    };
+
+    // Debug first candle
+    if (result.t.length > 0) {
+      console.log('🔍 First candle details:');
+      console.log('   Time:', new Date(result.t[0]));
+      console.log('   Open:', result.o[0]);
+      console.log('   High:', result.h[0]);
+      console.log('   Low:', result.l[0]);
+      console.log('   Close:', result.c[0]);
+      console.log('📈 Price range - Open:', Math.min(...result.o), 'to', Math.max(...result.o));
+    } else {
+      console.log('❌ NO CANDLES RETURNED FROM BYBIT');
+    }
+
+    const hasData = result.t.length > 0;
     if (!hasData) {
-      console.log('\n📤 Sending empty response to frontend');
       return res.status(200).json({
-        resolution_used: interval,
-        message: 'No candles found for chosen range/resolution on Binance. Try a smaller/recent range.',
-        result: data.result
+        resolution_used: interval + 'm',
+        message: 'No candles found for chosen range on Bybit. Try a smaller/recent range.',
+        result: result
       });
     }
 
-    console.log(`\n📤 Sending ${data.result.t.length} candles to frontend`);
+    console.log(`📤 Sending ${result.t.length} candles to frontend`);
     console.log('✅ ========== REQUEST COMPLETE ==========\n');
     
     return res.json({ 
-      resolution_used: data.resolution_used, 
-      result: data.result 
+      resolution_used: interval + 'm', 
+      result: result 
     });
     
   } catch (err) {
     console.error('\n❌ ========== SERVER ERROR ==========');
     console.error('Error details:', err.message);
     if (err.response) {
-      console.error('Binance API response:', err.response.data);
+      console.error('API response:', err.response.data);
     }
     console.error('❌ ========== ERROR END ==========\n');
     
@@ -309,10 +196,10 @@ app.get('/api/candles', async (req, res) => {
   }
 });
 
-const PORT = process.env.PORT || 4000; // Make sure it's 4000, not 4800
+const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log('🚀 ==========================================');
-  console.log('🚀 Binance Backend Server STARTED');
+  console.log('🚀 Bybit Backend Server STARTED');
   console.log('🚀 Port:', PORT);
   console.log('🚀 Time:', new Date().toLocaleString());
   console.log('🚀 ==========================================');
