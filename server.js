@@ -1,12 +1,18 @@
-﻿const express = require('express');
+const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
-app.use(cors());
-const PORT = process.env.PORT || 4809;
 
-// Bybit API - High limits, no restrictions
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// Use Render's port or default to 10000
+const PORT = process.env.PORT || 10000;
+
+// Binance API - High limits, no restrictions
 const BYBIT_API = 'https://api.bybit.com/v5/market/kline';
 
 // Convert resolution to Bybit interval
@@ -79,23 +85,6 @@ app.get('/api/candles', async (req, res) => {
   }
 });
 
-// Additional endpoints for more data
-app.get('/api/funding-rate', async (req, res) => {
-  try {
-    const response = await axios.get('https://api.bybit.com/v5/market/funding/history', {
-      params: {
-        category: 'linear',
-        symbol: 'BTCUSDT',
-        limit: 100
-      }
-    });
-
-    res.json(response.data.result.list);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({ 
@@ -107,26 +96,22 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Root endpoint
+// Root endpoint - simple response
 app.get('/', (req, res) => {
   res.json({
-    message: 'BTC Movements Backend',
+    message: 'BTC Movements Backend API',
     endpoints: {
       candles: '/api/candles?instrument_name=BTC-PERPETUAL&resolution=60',
-      funding: '/api/funding-rate',
       health: '/api/health'
-    },
-    examples: {
-      hourly: '/api/candles?instrument_name=BTC-PERPETUAL&resolution=60&limit=100',
-      daily: '/api/candles?instrument_name=BTC-PERPETUAL&resolution=D&limit=30'
     }
   });
 });
+
+// Remove the static file serving that's causing the error
+// app.use(express.static('public'));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 BTC Movements Backend running on port ${PORT}`);
   console.log(`📊 Bybit API Endpoint: http://localhost:${PORT}/api/candles`);
   console.log(`❤️ Health Check: http://localhost:${PORT}/api/health`);
-  console.log(`⚡ Rate Limits: 100 requests/second`);
 });
-//#tp 
