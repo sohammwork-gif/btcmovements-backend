@@ -1,6 +1,8 @@
 // server.js
-// Robust Binance candle fetcher (spot by default) with Dubai (Asia/Dubai, UTC+4) date handling.
-// Usage examples below the file.
+// Binance candle backend with Dubai (Asia/Dubai) date handling.
+// Usage:
+//   GET /api/candles?instrument_name=BTC&start_date=2025-10-01&end_date=2025-10-02&resolution=1m&market=spot
+// Responds with an array of formatted candle objects.
 
 const express = require('express');
 const axios = require('axios');
@@ -35,7 +37,6 @@ const INTERVAL_MS = {
 
 // Convert a YYYY-MM-DD string (Dubai local date) to UTC ms start/end
 function dateToUTCTimestamps(dateStr) {
-  // Accept only YYYY-MM-DD
   const parts = dateStr.split('-').map(Number);
   if (parts.length !== 3 || parts.some(isNaN)) {
     throw new Error('date must be in YYYY-MM-DD format');
@@ -73,10 +74,7 @@ async function fetchBinanceData(symbol, startUTC, endUTC, interval = '1m', useFu
   const allData = [];
 
   while (start <= endUTC) {
-    // request at most `limit` candles from `start`
-    // chunkEnd chosen so we don't ask for more than limit candles
     const chunkEnd = Math.min(endUTC, start + intervalMs * (limit - 1));
-
     try {
       const response = await axios.get(apiBase, {
         params: {
@@ -86,7 +84,7 @@ async function fetchBinanceData(symbol, startUTC, endUTC, interval = '1m', useFu
           endTime: chunkEnd,
           limit: limit
         },
-        timeout: 15000
+        timeout: 20000
       });
 
       const data = response.data;
@@ -94,11 +92,9 @@ async function fetchBinanceData(symbol, startUTC, endUTC, interval = '1m', useFu
 
       allData.push(...data);
 
-      // move to next candle AFTER the last returned candle
       const lastOpen = Number(data[data.length - 1][0]);
       const nextStart = lastOpen + intervalMs;
 
-      // safety: if we didn't move forward, break to avoid infinite loop
       if (nextStart <= start) {
         console.warn('fetchBinanceData: start did not advance; breaking to avoid infinite loop.');
         break;
@@ -106,18 +102,13 @@ async function fetchBinanceData(symbol, startUTC, endUTC, interval = '1m', useFu
 
       start = nextStart;
 
-      // if server returned less than limit we likely reached the end of available data for range
       if (data.length < limit) break;
-
-      // small sleep could be added if you hit rate limits. For now, continue
     } catch (err) {
-      // bubble up with more context
-      const msg = (err && err.response && err.response.data) ? JSON.stringify(err.response.data) : (err.message || err);
+      const msg = (err && err.response && err.response.data) ? JSON.stringify(err.response.data) : (err.message || String(err));
       throw new Error('Binance fetch error: ' + msg);
     }
   }
 
-  // dedupe & sort
   const clean = dedupeAndSortCandles(allData);
   return clean;
 }
@@ -125,7 +116,7 @@ async function fetchBinanceData(symbol, startUTC, endUTC, interval = '1m', useFu
 // Format a raw Binance kline array into a friendly object
 function formatKlineArray(candleArr) {
   return {
-    timestamp: Number(candleArr[0]),
+    timestamp: Number(candleArr[0]),           // open time (ms)
     open: parseFloat(candleArr[1]),
     high: parseFloat(candleArr[2]),
     low: parseFloat(candleArr[3]),
@@ -151,7 +142,7 @@ app.get('/api/candles', async (req, res) => {
       start_date,
       end_date,
       resolution = '1m',
-      market = 'spot' // 'spot' or 'futures'
+      market = 'spot'
     } = req.query;
 
     if (!start_date) {
@@ -169,11 +160,14 @@ app.get('/api/candles', async (req, res) => {
 
     const useFutures = market.toLowerCase() === 'futures';
 
-    // compute UTC range (Dubai-based dates)
     const { startUTC } = dateToUTCTimestamps(start_date);
     const finalEndUTC = end_date ? dateToUTCTimestamps(end_date).endUTC : dateToUTCTimestamps(start_date).endUTC;
 
-    console.log('📈 Fetching Binance candles', { symbol, resolution, start_date, end_date, market, startUTC: new Date(startUTC).toISOString(), finalEndUTC: new Date(finalEndUTC).toISOString() });
+    console.log('📈 Fetching Binance candles', {
+      symbol, resolution, start_date, end_date, market,
+      startUTC: new Date(startUTC).toISOString(),
+      finalEndUTC: new Date(finalEndUTC).toISOString()
+    });
 
     const raw = await fetchBinanceData(symbol, startUTC, finalEndUTC, resolution, useFutures);
 
@@ -185,31 +179,11 @@ app.get('/api/candles', async (req, res) => {
 
     console.log(`✅ Returned ${formatted.length} candles for ${symbol}`);
     console.log(`First ts: ${new Date(formatted[0].timestamp).toISOString()}  Last ts: ${new Date(formatted[formatted.length - 1].timestamp).toISOString()}`);
+
     res.json(formatted);
   } catch (error) {
     console.error('❌ /api/candles error:', error && error.message ? error.message : error);
     res.status(500).json({ error: 'Failed to fetch data', details: error && error.message ? error.message : String(error) });
-  }
-});
-
-// Simple test endpoint (hard-coded date) - useful to validate quickly
-app.get('/api/test', async (req, res) => {
-  try {
-    // example test date - change as needed
-    const symbol = 'BTCUSDT';
-    const { startUTC, endUTC } = dateToUTCTimestamps('2024-10-01');
-    const raw = await fetchBinanceData(symbol, startUTC, endUTC, '1m', false);
-    const formatted = raw.map(formatKlineArray);
-    return res.json({
-      symbol,
-      date: '2024-10-01 (Dubai)',
-      candles_count: formatted.length,
-      sample_candles: formatted.slice(0, 5),
-      first_ts_iso: new Date(formatted[0].timestamp).toISOString(),
-      last_ts_iso: new Date(formatted[formatted.length - 1].timestamp).toISOString()
-    });
-  } catch (err) {
-    return res.status(500).json({ error: err.message || String(err) });
   }
 });
 
