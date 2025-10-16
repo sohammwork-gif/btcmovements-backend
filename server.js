@@ -3,130 +3,146 @@ const axios = require('axios');
 const cors = require('cors');
 
 const app = express();
-
-// Middleware
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// COINGECKO API - NO RESTRICTIONS
-const COINGECKO_API = 'https://api.coingecko.com/api/v3';
+// OKX Public API - NO API KEYS NEEDED for market data
+const OKX_API = 'https://www.okx.com/api/v5/market/candles';
 
-// HEALTH CHECK
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
-    message: 'BTC Movements Backend is running',
-    timestamp: new Date().toISOString(),
-    provider: 'CoinGecko API - No restrictions'
-  });
-});
+// Convert resolution to OKX interval
+function getOKXInterval(resolution) {
+  const intervalMap = {
+    '1': '1m', '3': '3m', '5': '5m', '15': '15m', '30': '30m',
+    '60': '1H', '120': '2H', '240': '4H', '360': '6H', '720': '12H',
+    'D': '1D', '1D': '1D', 'W': '1W', 'M': '1M'
+  };
+  return intervalMap[resolution] || '1H';
+}
 
-// CANDLES ENDPOINT - USING COINGECKO
+// Get instrument ID based on selection
+function getInstrumentId(instrument_name) {
+  if (instrument_name.includes('BTC') && instrument_name.includes('PERP')) {
+    return 'BTC-USDT-SWAP'; // BTC Perpetual Swap
+  } else if (instrument_name.includes('ETH') && instrument_name.includes('PERP')) {
+    return 'ETH-USDT-SWAP'; // ETH Perpetual Swap
+  } else {
+    return 'BTC-USDT-SWAP'; // Default to BTC
+  }
+}
+
 app.get('/api/candles', async (req, res) => {
   try {
-    const { instrument_name, resolution = '60', start_ts, end_ts } = req.query;
+    const { instrument_name, start_ts, end_ts, resolution = '60', limit = 100 } = req.query;
     
-    console.log('📡 Fetching from CoinGecko:', { instrument_name, resolution });
+    console.log('🚀 Fetching from OKX:', { instrument_name, resolution, limit });
 
-    // Convert resolution to days for CoinGecko
-    let days = 30;
-    let interval = 'daily';
-    
-    if (resolution <= 60) {
-      days = 1; // For intraday, get 1 day with hourly data
-      interval = 'hourly';
-    } else if (resolution === '240') {
-      days = 7; // 4-hour data for 7 days
-      interval = 'daily';
-    } else if (resolution === 'D') {
-      days = 30; // Daily data for 30 days
-      interval = 'daily';
-    }
+    const okxInterval = getOKXInterval(resolution);
+    const instId = getInstrumentId(instrument_name);
 
-    const response = await axios.get(`${COINGECKO_API}/coins/bitcoin/market_chart`, {
+    const response = await axios.get(OKX_API, {
       params: {
-        vs_currency: 'usd',
-        days: days,
-        interval: interval
+        instId: instId,
+        bar: okxInterval,
+        limit: parseInt(limit),
+        after: start_ts || undefined,
+        before: end_ts || undefined
       },
-      timeout: 15000
+      timeout: 10000
     });
 
-    // Transform CoinGecko data to candle format
-    const prices = response.data.prices || [];
-    
-    if (prices.length === 0) {
-      return res.status(404).json({ error: 'No data available' });
+    if (response.data.code !== '0') {
+      throw new Error(response.data.msg || 'OKX API error');
     }
 
-    // Create simple OHLC data from price points
-    // For simplicity, we'll use the same price for OHLC since CoinGecko only gives us price points
-    const candles = prices.map(([timestamp, price], index) => {
-      // Add small variation to create OHLC values
-      const variation = price * 0.001; // 0.1% variation
-      return {
-        timestamp: timestamp,
-        open: price - (variation * Math.random()),
-        high: price + (variation * Math.random()),
-        low: price - (variation * Math.random()),
-        close: price,
-        volume: response.data.total_volumes?.[index]?.[1] || 0
-      };
-    });
+    // OKX returns: [timestamp, open, high, low, close, volume, volumeCcy]
+    const formattedData = response.data.data.map(candle => ({
+      timestamp: parseInt(candle[0]),
+      open: parseFloat(candle[1]),
+      high: parseFloat(candle[2]),
+      low: parseFloat(candle[3]),
+      close: parseFloat(candle[4]),
+      volume: parseFloat(candle[5])
+    }));
 
-    console.log(`✅ Success: Returning ${candles.length} candles from CoinGecko`);
-    res.json(candles);
+    console.log(`✅ Success: Returning ${formattedData.length} candles from OKX`);
+    res.json(formattedData);
     
   } catch (error) {
-    console.error('❌ CoinGecko API error:', error.message);
+    console.error('❌ OKX API error:', error.message);
+    
+    if (error.code === 'ECONNABORTED') {
+      return res.status(408).json({ error: 'Request timeout' });
+    }
     
     if (error.response?.status === 429) {
-      return res.status(429).json({ error: 'Rate limit exceeded. Please wait a minute.' });
+      return res.status(429).json({ error: 'Rate limit exceeded' });
     }
     
     res.status(500).json({ 
-      error: 'Failed to fetch data',
+      error: 'Failed to fetch data from OKX',
       details: error.message 
     });
   }
 });
 
-// ALTERNATIVE: Direct price endpoint (simpler)
-app.get('/api/price', async (req, res) => {
-  try {
-    const response = await axios.get(`${COINGECKO_API}/simple/price`, {
-      params: {
-        ids: 'bitcoin',
-        vs_currencies: 'usd',
-        include_24hr_change: true
-      }
-    });
-    
-    res.json({
-      bitcoin: response.data.bitcoin,
-      timestamp: new Date().toISOString()
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ROOT
-app.get('/', (req, res) => {
+// Health check endpoint
+app.get('/api/health', (req, res) => {
   res.json({ 
-    message: 'BTC Movements API - CoinGecko',
-    endpoints: [
-      '/api/health',
-      '/api/candles?instrument_name=BTC-PERPETUAL&resolution=60',
-      '/api/price'
-    ]
+    status: 'OK', 
+    message: 'BTC Movements Backend is running',
+    timestamp: new Date().toISOString(),
+    provider: 'OKX Public API',
+    limits: '20 requests/2 seconds',
+    security: 'No API keys needed - public data only'
   });
 });
 
-// START SERVER
+// Test endpoint to verify OKX connection
+app.get('/api/test', async (req, res) => {
+  try {
+    const response = await axios.get(OKX_API, {
+      params: {
+        instId: 'BTC-USDT-SWAP',
+        bar: '1H',
+        limit: 3
+      }
+    });
+    
+    res.json({ 
+      status: 'OKX API Connected',
+      sample_data: response.data.data,
+      rate_limits: '20 requests per 2 seconds'
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'OKX API Failed', 
+      error: error.message 
+    });
+  }
+});
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'BTC Movements Backend API',
+    version: '1.0',
+    provider: 'OKX Public API',
+    endpoints: {
+      health: '/api/health',
+      candles: '/api/candles?instrument_name=BTC-PERPETUAL&resolution=60&limit=100',
+      test: '/api/test'
+    },
+    note: 'Using public market data - no authentication required'
+  });
+});
+
+// Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`✅ Using CoinGecko API - No IP restrictions`);
+  console.log(`🚀 BTC Movements Backend running on port ${PORT}`);
+  console.log(`📊 Using OKX Public API - No authentication needed`);
+  console.log(`⚡ Rate Limits: 20 requests/2 seconds`);
+  console.log(`✅ Health: http://localhost:${PORT}/api/health`);
+  console.log(`📈 Candles: http://localhost:${PORT}/api/candles`);
 });
