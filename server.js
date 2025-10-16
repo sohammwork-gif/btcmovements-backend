@@ -8,164 +8,144 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 10000;
 
-// Binance SPOT API
-const BINANCE_SPOT_API = 'https://api.binance.com/api/v3/klines';
+// Binance SPOT API - SAME AS YOUR PYTHON CODE
+const BINANCE_API = 'https://api.binance.com/api/v3/klines';
 
-// Convert resolution to Binance interval
-function getBinanceInterval(resolution) {
-  const map = {
-    '1': '1m', '5': '5m', '15': '15m', '30': '30m',
-    '60': '1h', '120': '2h', '240': '4h', '360': '6h', '720': '12h',
-    'D': '1d', '1D': '1d', 'W': '1w', 'M': '1M'
-  };
-  return map[resolution] || '1h';
+// Convert date to UTC timestamps (like your Python function)
+function dateToUTCTimestamps(dateStr) {
+  const startDate = new Date(dateStr + 'T00:00:00+04:00'); // Dubai time UTC+4
+  const endDate = new Date(dateStr + 'T23:59:59+04:00');   // Dubai time UTC+4
+  
+  const startUTC = startDate.getTime();
+  const endUTC = endDate.getTime();
+  
+  return { startUTC, endUTC };
 }
 
-// Get symbol for spot trading
-function getSpotSymbol(instrument_name) {
-  if (instrument_name.includes('BTC') && instrument_name.includes('SPOT')) {
-    return 'BTCUSDT';
-  } else if (instrument_name.includes('ETH') && instrument_name.includes('SPOT')) {
-    return 'ETHUSDT';
-  } else {
-    return 'BTCUSDT'; // Default
+// Fetch data from Binance (like your Python function)
+async function fetchBinanceData(symbol, startUTC, endUTC, interval = '1m') {
+  const allData = [];
+  let start = startUTC;
+
+  while (start < endUTC) {
+    try {
+      const response = await axios.get(BINANCE_API, {
+        params: {
+          symbol: symbol,
+          interval: interval,
+          startTime: start,
+          endTime: endUTC,
+          limit: 1000
+        },
+        timeout: 10000
+      });
+
+      const data = response.data;
+      if (!data || data.length === 0) break;
+
+      allData.push(...data);
+      start = data[data.length - 1][0] + 60000; // move forward 1 minute
+
+    } catch (error) {
+      console.error('Error fetching Binance data:', error.message);
+      break;
+    }
   }
+
+  return allData;
 }
 
+// Main endpoint - SAME LOGIC AS YOUR PYTHON CODE
 app.get('/api/candles', async (req, res) => {
   try {
-    const { instrument_name, start_ts, end_ts, resolution = '60', limit = 500 } = req.query;
+    const { instrument_name, start_date, end_date, resolution = '1m' } = req.query;
     
-    console.log('📈 Fetching SPOT data from Binance:', { instrument_name, resolution, limit });
+    console.log('📈 Fetching REAL Binance data...', { instrument_name, start_date, end_date, resolution });
 
-    const binanceInterval = getBinanceInterval(resolution);
-    const symbol = getSpotSymbol(instrument_name);
+    // Get symbol (BTCUSDT or ETHUSDT)
+    const symbol = instrument_name.includes('BTC') ? 'BTCUSDT' : 'ETHUSDT';
+    
+    // Convert dates to UTC timestamps (like your Python code)
+    const { startUTC, endUTC } = dateToUTCTimestamps(start_date);
+    const finalEndUTC = end_date ? dateToUTCTimestamps(end_date).endUTC : endUTC;
 
-    const response = await axios.get(BINANCE_SPOT_API, {
-      params: {
-        symbol: symbol,
-        interval: binanceInterval,
-        startTime: start_ts || undefined,
-        endTime: end_ts || undefined,
-        limit: parseInt(limit)
-      },
-      timeout: 10000
-    });
+    console.log(`🕐 Time range: ${new Date(startUTC)} to ${new Date(finalEndUTC)}`);
 
-    // Binance returns: [timestamp, open, high, low, close, volume, ...]
-    const formattedData = response.data.map(candle => ({
+    // Fetch data from Binance
+    const binanceData = await fetchBinanceData(symbol, startUTC, finalEndUTC, resolution);
+
+    if (binanceData.length === 0) {
+      return res.status(404).json({ error: 'No data found for the specified date range' });
+    }
+
+    // Format data exactly like your Python output
+    const formattedData = binanceData.map(candle => ({
       timestamp: parseInt(candle[0]),
       open: parseFloat(candle[1]),
       high: parseFloat(candle[2]),
       low: parseFloat(candle[3]),
       close: parseFloat(candle[4]),
-      volume: parseFloat(candle[5])
+      volume: parseFloat(candle[5]),
+      closeTime: parseInt(candle[6]),
+      quoteVolume: parseFloat(candle[7]),
+      trades: parseInt(candle[8]),
+      takerBuyBase: parseFloat(candle[9]),
+      takerBuyQuote: parseFloat(candle[10])
     }));
 
-    console.log(`✅ Success: Returning ${formattedData.length} SPOT candles for ${symbol}`);
+    console.log(`✅ REAL DATA: ${formattedData.length} candles for ${symbol}`);
+    console.log(`💰 Price range: ${formattedData[0]?.close} to ${formattedData[formattedData.length - 1]?.close}`);
+    
     res.json(formattedData);
     
   } catch (error) {
-    console.error('❌ Binance Spot API error:', error.message);
-    
-    // Fallback to mock data
-    const mockData = generateMockData();
-    console.log('🔄 Using mock data as fallback');
-    res.json(mockData);
+    console.error('❌ Binance API error:', error.message);
+    res.status(500).json({ 
+      error: 'Failed to fetch data from Binance',
+      details: error.message
+    });
   }
 });
 
-// Generate realistic mock data as fallback
-function generateMockData() {
-  const basePrice = 60000;
-  const data = [];
-  const now = Date.now();
-  
-  for (let i = 0; i < 100; i++) {
-    const timestamp = now - (100 - i) * 3600000;
-    const variation = basePrice * 0.02 * (Math.random() - 0.5);
-    const price = basePrice + variation;
-    
-    data.push({
-      timestamp: timestamp,
-      open: price,
-      high: price + Math.random() * 200,
-      low: price - Math.random() * 200,
-      close: price + (Math.random() - 0.5) * 100,
-      volume: 1000 + Math.random() * 5000
-    });
-  }
-  
-  return data;
-}
-
-// Health check endpoint
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'BTC Movements Backend - Binance SPOT API',
+    message: 'BTC Movements Backend - Real Binance Data',
     timestamp: new Date().toISOString(),
-    provider: 'Binance Spot API',
-    symbols: 'BTCUSDT, ETHUSDT',
-    limits: '1200 requests/minute'
+    provider: 'Binance Spot API (Same as Python script)'
   });
 });
 
-// Test specific symbol
-app.get('/api/test/:symbol', async (req, res) => {
+// Test endpoint with exact dates
+app.get('/api/test', async (req, res) => {
   try {
-    const symbol = req.params.symbol.toUpperCase();
-    const response = await axios.get(BINANCE_SPOT_API, {
-      params: {
-        symbol: symbol,
-        interval: '1h',
-        limit: 3
-      }
+    const symbol = 'BTCUSDT';
+    const { startUTC, endUTC } = dateToUTCTimestamps('2024-10-01');
+    
+    const data = await fetchBinanceData(symbol, startUTC, endUTC, '1m');
+    
+    res.json({
+      symbol: symbol,
+      date: '2024-10-01',
+      candles_count: data.length,
+      sample_candles: data.slice(0, 3).map(candle => ({
+        timestamp: new Date(parseInt(candle[0])).toISOString(),
+        open: candle[1],
+        high: candle[2],
+        low: candle[3],
+        close: candle[4],
+        volume: candle[5]
+      }))
     });
     
-    res.json({ 
-      status: `Binance Spot API Connected for ${symbol}`,
-      symbol: symbol,
-      sample_data: response.data.map(candle => ({
-        timestamp: parseInt(candle[0]),
-        open: parseFloat(candle[1]),
-        high: parseFloat(candle[2]),
-        low: parseFloat(candle[3]),
-        close: parseFloat(candle[4])
-      })),
-      rate_limits: '1200 requests per minute'
-    });
   } catch (error) {
-    res.status(500).json({ 
-      status: 'Binance Spot API Failed', 
-      error: error.message 
-    });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'BTC Movements Backend API - SPOT DATA',
-    version: '1.0',
-    provider: 'Binance Spot API',
-    symbols: {
-      btc: 'BTC-USDT-SPOT',
-      eth: 'ETH-USDT-SPOT'
-    },
-    endpoints: {
-      health: '/api/health',
-      candles: '/api/candles?instrument_name=BTC-USDT-SPOT&resolution=60&limit=100',
-      test_btc: '/api/test/BTCUSDT',
-      test_eth: '/api/test/ETHUSDT'
-    }
-  });
-});
-
-// Start server
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 BTC Movements Backend running on port ${PORT}`);
-  console.log(`📊 Using Binance SPOT API`);
-  console.log(`⚡ Rate Limits: 1200 requests/minute`);
-  console.log(`✅ Health: http://localhost:${PORT}/api/health`);
+  console.log(`🚀 Backend running on port ${PORT}`);
+  console.log(`📊 Using EXACT Binance API as your Python script`);
+  console.log(`✅ Real-time BTC/USDT and ETH/USDT spot data`);
 });
